@@ -37,6 +37,6 @@ figS6 <- function(obj, project_dir) {
           legend.title = element_text(size = 16, face = "bold")
     )
   score_boxplot
-  ggsave(file.path(project_dir, "figures", 'FigS6.tiff'), device = "tiff", width = 360, height = 180, units = "mm", dpi = 250)
+  ggsave(file.path(project_dir, "figures", 'FigS6.tiff'), device = "tiff", width = 360, height = 180, units = "mm", dpi = 600)
   
 }

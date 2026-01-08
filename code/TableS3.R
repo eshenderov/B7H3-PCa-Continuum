@@ -13,8 +13,7 @@ tableS3 <- function (obj, project_dir) {
   summarized_meta_data %>% 
     write.table(x = ., 
                 file = file.path(project_dir, 
-                                 "tables", 
-                                 "TableS3.xlsx"), 
+                                 "TableS3.csv"), 
                 row.names = FALSE, 
                 col.names = TRUE
                 )

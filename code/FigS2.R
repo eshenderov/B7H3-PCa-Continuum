@@ -31,7 +31,7 @@ figS2 <- function (obj, project_dir) {
     theme(axis.title.x = element_blank()) + 
     NoLegend()
   plt <- wrap_plots(p1, p2, p3, p4)
-  ggsave(filename = "FigS2.pdf", path = file.path(project_dir, "figures"), plot = plt, device = "pdf", width = 150, height = 150, units = "mm", dpi = 300)
-  ggsave(filename = "FigS2.tiff", path = file.path(project_dir, "figures"), plot = plt, device = "tiff", width = 150, height = 150, units = "mm", dpi = 300)
+  ggsave(filename = "FigS2.pdf", path = file.path(project_dir, "figures"), plot = plt, device = "pdf", width = 150, height = 150, units = "mm", dpi = 600)
+  ggsave(filename = "FigS2.tiff", path = file.path(project_dir, "figures"), plot = plt, device = "tiff", width = 150, height = 150, units = "mm", dpi = 600)
   
 }

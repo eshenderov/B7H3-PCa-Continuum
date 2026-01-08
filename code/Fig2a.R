@@ -1,8 +1,7 @@
-fig2a <- function (obj, reduction, project_dir) {
+fig2a <- function (obj, reduction, project_dir, genes, gene_names) {
   
-  features <- c("STEAP1", "STEAP2", "PSCA", "FOLH1", "TACSTD2", "PVRL1", "DLL3", "CD276", "CD274", "PDCD1LG2", "PDCD1", "LAG3", "TIGIT", "TNFRSF4", "TNFRSF9", "CTLA4")
-  features_title <- c("STEAP1", "STEAP2", "PSCA", "PSMA", "TROP-2", "NECTIN1", "DLL3", "B7-H3", "PD-1", "PD-L2", "PD-L1", "LAG3", "TIGIT", "OX40", "4-1BB", "CTLA4")
-  marker_genes <- c("KLK3", "TPSAB1", "CD68", "LYZ", "NKG7", "MYH11", "RGS5", "CD3D","CD3E", "KRT5", "KRT15", "CD79A", "BANK1", "KRT13", "VWF", "FLT1", "FBLN1", "DCN", "SCGB3A1", "RARRES1")
+  features <- genes
+  features_title <- gene_names
   axes <- list(x = -12, y = -15, x_len = 5, y_len = 5)
   stallion = c("1"="#D4477D","2"="#272E6A","3"="#208A42","4"="#89288F", 
                "5"="#F47D2B", "6"="#FEE500","7"="#8A9FD1","8"="#C06CAB", 
@@ -11,9 +10,9 @@ fig2a <- function (obj, reduction, project_dir) {
                "17"="#0C727C", "18"="#7E1416","9"="#D8A767","20"="#3D3D3D"
   )
   stallion_cols <- c("#D4477D", "#2F8AC4", "#7DD06F", "#89288F", "#FEE500", "#8A9FD1", "#F47D2B", "#7B6FD0", "#90D5E4", "#60824f", "#88CFA4", "#D19EC4", "#D8A767", "#D0CD47", "#484125")
-  names(stallion_cols) <- levels(Idents(obj))
-  umap_df <- cbind(obj@reductions[[reduction]]@cell.embeddings, 
-                   data.frame(Label = obj@meta.data[["CoarseAnnotation"]])
+  names(stallion_cols) <- levels(Idents(obj_sub))
+  umap_df <- cbind(obj_sub@reductions[[reduction]]@cell.embeddings, 
+                   data.frame(Label = obj_sub@meta.data[["CoarseAnnotation"]])
   )
   colnames(umap_df) <- c("UMAP1", "UMAP2", "Label")
   
@@ -140,16 +139,27 @@ fig2a <- function (obj, reduction, project_dir) {
   efghijk
   "
   
-  gc()
-  plt <- umap_plot_nolabel_nolegend + FP[[1]] + FP[[2]] + FP[[3]] + FP[[4]] + FP[[5]] + plot_spacer() + FP[[6]] + FP[[7]] + FP[[8]] + FP[[9]] + FP[[10]] + plot_spacer() + plot_spacer() + FP[[11]] + FP[[12]] + FP[[13]] + FP[[14]] + FP[[15]] + FP[[16]] + 
-    plot_layout(design = design, guides = 'collect', heights = c(10, -1.5, 10, -1.5, 10)) & 
-    theme(plot.margin = unit(c(0, 0, 0, 0), units = "mm"))
+  empty_plot <- ggplot() + theme_void()
   
-  # plt + rasterise(geom_point(), layers='Point', dpi=600)
-  plt
-  dev.off()
+  plt <-
+    (
+      umap_plot_nolabel_nolegend +
+        FP[[1]] + FP[[2]] + FP[[3]] + FP[[4]] + FP[[5]] + 
+        plot_spacer() + 
+        FP[[6]] + FP[[7]] + FP[[8]] + FP[[9]] + FP[[10]] + 
+        plot_spacer() + 
+        plot_spacer() + FP[[11]] + FP[[12]] + FP[[13]] + FP[[14]] + FP[[15]] + FP[[16]]
+    ) +
+    plot_layout(
+      design  = design,
+      guides  = "collect",
+      heights = c(10, -1.5, 10, -1.5, 10)  # ensure these are valid for your layout
+    ) &
+    theme(plot.margin = margin(0, 0, 0, 0))
+  
+  
   gc()
-  ggsave(plot = plt, filename = file.path(project_dir, "figures", 'Fig2a.pdf'), device = "pdf", width = 350, height = 162, units = "mm")
+  # rasterize(geom_point(), layers='Point', dpi=600)
   ggsave(plot = plt, filename = file.path(project_dir, "figures", "Fig2a.tiff"), device = "tiff", width = 350, height = 162, units = "mm", dpi = 250)
   ggsave(plot = umap_plot_label_legend, filename = file.path(project_dir, "figures", 'Annotated UMAP.pdf'), device = "pdf", width = 350, height = 162, units = "mm")
   ggsave(plot = umap_plot_label_legend, filename = file.path(project_dir, "figures", "Annotated UMAP.tiff"), device = "tiff", width = 350, height = 162, units = "mm", dpi = 250)
@@ -157,3 +167,5 @@ fig2a <- function (obj, reduction, project_dir) {
   ggsave(plot = legend_UMAP, filename = file.path(project_dir, "figures", "UMAP Legend.tiff"), device = "tiff", width = 350, height = 162, units = "mm", dpi = 250)
   
 }
+
+

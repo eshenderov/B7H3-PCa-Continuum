@@ -1,64 +1,105 @@
-fig2b <- function (obj, project_dir) {
+figS8 <- function (obj, project_dir, genes, gene_names, heatmap_row_split) {
   
-  # Subset counts data for epithelial cells minus Basal cells --------------------
-  obj_epithelial <- subset(obj, 
-                           subset = CoarseAnnotation %in% 
-                             c("Luminal", "Club", "Hillock", "Neuroendocrine")
+  suppressPackageStartupMessages({
+    library(Seurat)
+    library(Matrix)
+    library(dplyr)
+    library(tidyverse)
+    library(ComplexHeatmap)
+    library(gplots)
+  })
+  
+  # ---------- Params ----------
+  epithelial_types <- c("Luminal", "Neuroendocrine")
+  genes <- genes  # your character vector of features
+  
+  # ---------- 1) Subset once & normalize once ----------
+  obj_epithelial <- subset(
+    obj_sub,
+    subset = CoarseAnnotation %in% epithelial_types
   )
-  obj_epithelial <- NormalizeData(obj_epithelial, normalization.method = "RC")
-  data_epithelial <- LayerData(obj_epithelial, assay = "RNA", layer = "counts")
-  n_cells_epithelial <- dim(obj_epithelial)[2]
+  
+  # ---------- 2) Build grouping (Patient_ID_Subtype) without loops ----------
+  md <- obj_epithelial@meta.data
+  md$Sample_Name <- md$Sample_ID
   
   # Separate meta data of subsetted epithelial cells above -----------------------
-  meta_data <- obj_epithelial@meta.data[, c("Subtype", "Dataset", "Patient_ID")]
+  meta_data <- obj_epithelial@meta.data[, c("Subtype", "Dataset", "Patient_ID", "Sample_ID")]
   meta_data <- meta_data %>% unique() %>% remove_rownames()
-  meta_data$"Sample Name" <- paste0(meta_data$Patient_ID, "_", meta_data$Subtype)
   
-  # Create a matrix to hold pseudobulk data of subsetted epithelial cells for all patients
-  data <- data.frame(matrix(nrow = dim(obj_epithelial)[1], ncol = nrow(meta_data)), row.names = rownames(obj_epithelial))
-  colnames(data) <- meta_data$"Sample Name"
+  # Keep genes that exist
+  genes <- intersect(genes, rownames(obj_epithelial))
+  stopifnot(length(genes) > 0)
   
-  # Create gene x patient matrix of intrasample cov ----------------------------
-  for (patient in patient_ID) {
-    
-    print(patient)
-    
-    obj_lum_sub <- subset(obj_lum, Patient_ID == patient)
-    obj_lum_sub <- NormalizeData(obj_lum_sub, normalization.method = "RC")
-    data <- FetchData(obj_lum_sub, vars = genes, layer = "data", assay = "RNA") %>% as.matrix()
-    # data_mat <- GetAssayData(obj_lum_sub, layer = "counts", assay = "RNA")
-    # lib_size <- colSums(data_mat)
-    # cts <- FetchData(obj_lum_sub, vars = "CD276", layer = "counts") %>% as.matrix() %>% as.vector()
-    # data <- (cts + 1) / lib_size
-    # H_patient <- vector(mode = "numeric", length = 10000)
-    # for (i in c(1:10000)) {
-    #   
-    #   data_mc <- sample(x = data, size = 0.2 * length(data), replace = FALSE)
-    #   H_patient[i] <- ((- log(data_mc)) * data_mc) %>% sum()
-    #   
-    # }
-    # H[patient] <- median(H_patient) / length(data) * 10000
-    
-    for (gene in genes) {
-      
-      
-      df[gene, patient] <- sd(data[, gene] %>% as.vector()) / mean(data[, gene] %>% as.vector()) * 100
-      
-    }
-    
-    data <- GetAssayData(obj_lum_sub, layer = "counts", assay = "RNA")
-    med_reads_per_cell[patient] <- colSums(data) %>% as.matrix() %>% as.vector() %>% median()
-    cell_count[patient] <- dim(obj_lum_sub)[2]
-    
-  }
+  # ---------- 3) Grab matrices once (sparse) ----------
+  # data: normalized (RC)
   
-  # Normalize counts data to relative counts -------------------------------------
-  data <- df_transpose(df_transpose(data) / colSums(data) * 1e9)
+  # counts: raw library sizes
+  C <- LayerData(obj_epithelial, assay = "RNA", layer = "counts")[genes, , drop = FALSE]
+  X <- LayerData(obj_epithelial, assay = "RNA", layer = "data")[genes, , drop = FALSE]
+  # obj_epithelial2 <- NormalizeData(obj_epithelial, normalization.method = "RC", scale.factor = 1000000)
+  # C <- GetAssayData(obj_epithelial, assay = "RNA", layer = "counts")
+  # X <- t(t(C)/colSums2(C))*1e6
+  # X_RC <- X
+  # X_LN <- X %>% log1p()
+  # X <- X_RC[genes, , drop = FALSE]
+  # X <- X_LN[genes, , drop = FALSE]
   
-  # Remove spurious samples ------------------------------------------------------
-  meta_data <- meta_data[!(meta_data$Dataset %in% c("GSE172357")), ]
-  meta_data$Dataset <- factor(meta_data$Dataset, levels = unique(meta_data$Dataset))
-  data <- data[, meta_data$`Sample Name`]
+  # ---------- 4) Make a sparse one-hot group matrix G (cells x groups) ----------
+  grp <- factor(md$Sample_Name)
+  G <- Matrix::Matrix(model.matrix(~ grp - 1), sparse = TRUE)     # columns in same order as levels(grp)
+  colnames(G) <- levels(grp)
+  n_cells_by_grp <- Matrix::colSums(G)                            # cell_count
+  
+  # ---------- 5) Per-group gene-wise mean & sd using sums and sums-of-squares ----------
+  # Sums by group (genes x groups)
+  S  <- X %*% G                               # sum(x)
+  # Sums of squares (modify a copy's @x then multiply)
+  X2 <- X
+  slot(X2, "x") <- slot(X2, "x")^2   # same as: X2@x <- X2@x^2
+  S2 <- X2 %*% G               # sum(x^2) without duplicating memory
+  # (The trick above reuses X sparsity; if you prefer clarity, do: X2 <- X; X2@x <- X2@x^2; S2 <- X2 %*% G)
+  
+  # Broadcast n across genes
+  N  <- matrix(rep(n_cells_by_grp, each = nrow(S)), nrow = nrow(S))
+  
+  # Means and (unbiased) variance
+  mu  <- S / pmax(N, 1)
+  var <- (S2 - (S^2) / pmax(N, 1)) / pmax(N - 1, 1)
+  sdg <- sqrt(pmax(var, 0))
+  
+  # Coefficient of variation (%) per gene x group
+  cv_pct <- 100 * (sdg / mu)
+  cv_pct[!is.finite(cv_pct)] <- NA_real_
+  
+  # Arrange outputs
+  dispersion_df <- as.data.frame(cv_pct)
+  rownames(dispersion_df) <- genes
+  colnames(dispersion_df) <- colnames(G)  # Sample_Name columns
+  
+  # ---------- 6) cell_count & median reads per cell (from counts) ----------
+  # Per-cell library sizes (use counts for "reads")
+  lib_sizes <- Matrix::colSums(C)  # length = number of cells
+  
+  # Median per group — fast, no per-sample Seurat subset
+  # (median isn't linear, so we use tapply on the vector)
+  median_reads_per_cell <- tapply(
+    lib_sizes,
+    grp,
+    median,
+    na.rm = TRUE
+  ) %>% as.numeric()
+  names(median_reads_per_cell) <- levels(grp)
+  
+  cell_count <- as.numeric(n_cells_by_grp)
+  names(cell_count) <- levels(grp)
+  
+  # Quick peek
+  cat(sprintf("genes x samples in dispersion: %d x %d\n",
+              nrow(dispersion_df), ncol(dispersion_df)))
+  
+  # ----------------------- New method ends ------------------------------------
+  # ----------------------------------------------------------------------------
   
   # Rename subtypes --------------------------------------------------------------
   meta_data$Subtype <- factor(meta_data$Subtype, levels = c("Healthy", "Benign", "Adeno", "ICC/IDC", "CRPC", "NEPC", "Small Cell") %>% rev())
@@ -73,63 +114,31 @@ fig2b <- function (obj, project_dir) {
              which(meta_data$Subtype %in% "Small Cell")
   ) %>% rev()
   meta_data <- meta_data[order, ]
-  data <- data[, meta_data$`Sample Name`]
+  dispersion_df <- dispersion_df[, meta_data$Sample_ID]
   
-  # Batch correction -------------------------------------------------------------
-  vsd <- log1p(data[, meta_data$"Sample Name" %>% as.character()] %>% as.matrix())
-  vsd_df_uncorrected <- as.data.frame(vsd)
-  RLE_plot(vsd_df_uncorrected)
-  vsd_df_corrected <- 
-    limma::removeBatchEffect(vsd, 
-                             batch = meta_data$Dataset, 
-                             group = meta_data$Subtype) %>% 
-    as.data.frame()
-  RLE_plot(vsd_df_corrected)
-  
-  # Calculate AR and NE Score ----------------------------------------------------
-  vsd <- vsd_df_corrected
-  features <- read_xlsx(path = file.path("/projects/eshenderov-hpc/Shivang/projects/scRNA-seq_atlas/Prostate/integrated_dataset", "Genesets_Emir.xlsx")) %>%
-    as.list()
-  features$`AR Score` <- features$`AR Score`[!(features$`AR Score` %in% NA)]
-  features$`NE Score` <- features$`NE Score`[!(features$`NE Score` %in% NA)]
-  AR_Score <- (vsd[features$`AR Score`, ] %>% as.matrix() %>% colSums2())/(features$`AR Score` %>% length())
-  NE_Score <- (vsd[features$`NE Score`, ] %>% as.matrix() %>% colSums2())/(features$`NE Score` %>% length())
-  
-  # Subset expression data matrix for genes of interest --------------------------
-  luminal_basal_genes <- c("STEAP1", "STEAP2", "PSCA", "FOLH1", "TACSTD2", "PVRL1", "DLL3", "CD276", "CD274", "PDCD1LG2", "PDCD1", "LAG3", "TIGIT", "TNFRSF4", "TNFRSF9", "CTLA4", "AR", "KLK2", "KLK3", "TMPRSS2", "FKBP5", "IGF1R")
-  vsd_sub <- vsd[luminal_basal_genes, ]
+  luminal_basal_genes <- genes
+
   
   # Prepare data for heatmap -----------------------------------------------------
-  anno <- meta_data %>% select(-c("Dataset"))
-  vsd_sub <- vsd_sub[, anno$`Sample Name`]
-  rownames(anno) <- anno$`Sample Name`
-  AR_Score <- AR_Score[anno$`Sample Name`]
-  NE_Score <- NE_Score[anno$`Sample Name`]
+  anno <- meta_data %>% dplyr::select(-c("Dataset"))
+  dispersion_df <- dispersion_df[, meta_data$`Sample_ID`]
+  rownames(anno) <- anno$`Sample_ID`
+  # AR_Score <- AR_Score[anno$`Sample Name`]
+  # NE_Score <- NE_Score[anno$`Sample Name`]
   
   # Assign colors to subtypes of PCa, AR and NE Score in heatmap -----------------
-  colors <- c("#5E4FA2", "#5E4FA2", "#3288BD", "#ABDDA4", "#E6F598", "#E6F598", "#E6F598", "#E6F598", "#FEE08B", "#FEE08B", "#F46D43", "#D53E4F", "#9E0142")
-  names(colors) <- c("Healthy", "Healthy", "Benign", "Tumor", "Tumor", "Tumor", "Tumor", "ICC/IDC", "ICC/IDC", "CRPC", "mixed-NEPC", "NEPC", "Small Cell")
+  # colors <- c("#5E4FA2", "#5E4FA2", "#3288BD", "#ABDDA4", "#E6F598", "#E6F598", "#E6F598", "#E6F598", "#FEE08B", "#FEE08B", "#F46D43", "#D53E4F", "#9E0142")
+  # names(colors) <- c("Healthy", "Healthy", "Benign", "Tumor", "Tumor", "Tumor", "Tumor", "ICC/IDC", "ICC/IDC", "CRPC", "mixed-NEPC", "NEPC", "Small Cell")
   colors <- c("#5E4FA2", "#3288BD", "#ABDDA4", "#E6F598", "#FEE08B", "#F46D43", "#9E0142")
-  names(colors) <- c("Healthy", "Benign", "Adeno", "CRPC", "mixed-NEPC", "NEPC", "Small Cell")
-  anno_colors_col <- list(Subtype = rev(colors),
-                          "AR_Score" = colorRamp2(breaks = seq(min(AR_Score), max(AR_Score), length.out = 100),
-                                                  hcl_palette = "SunsetDark",
-                                                  transparency = 0,
-                                                  reverse = TRUE),
-                          "NE_Score" = colorRamp2(breaks = seq(min(NE_Score), max(NE_Score), length.out = 100),
-                                                  hcl_palette = "Purples 3",
-                                                  transparency = 0,
-                                                  reverse = TRUE)
-  )
+  names(colors) <- c("Healthy", "Benign", "Adeno", "ICC/IDC", "CRPC", "NEPC", "Small Cell")
+  anno_colors_col <- list(Subtype = rev(colors))
   
   # Create heatmap column section ------------------------------------------------
   col_ha <- HeatmapAnnotation(Subtype = anno$Subtype,
-                              "AR_Score" = AR_Score %>% as.numeric() %>% unname(),
-                              "NE_Score" = NE_Score %>% as.numeric() %>% unname(),
                               col = anno_colors_col,
-                              annotation_label = c("Subtype", "AR Score", "NE Score"),
+                              annotation_label = c("Subtype"),
                               annotation_name_side = "right",
-                              border = c(Subtype = FALSE, AR_Score = FALSE, NE_Score = FALSE),
+                              border = c(Subtype = FALSE),
                               simple_anno_size = unit(5, "mm")
   )
   
@@ -138,174 +147,52 @@ fig2b <- function (obj, project_dir) {
   names(anno_colors_row$Gene) <- c("ADC", "Immune", "AR reg.")
   
   # Create heatmap row section ---------------------------------------------------
-  row_ha <- HeatmapAnnotation(Gene = rep(x = c("ADC", "Immune", "AR reg."), times = c(7, 9, 6)) %>% 
+  row_ha <- HeatmapAnnotation(Gene = rep(x = c("ADC", "Immune", "AR reg."), times = heatmap_row_split) %>% 
                                 factor(levels = c("ADC", "Immune", "AR reg.")),
                               col = anno_colors_row,
                               which = "row",
                               show_annotation_name = FALSE,
                               simple_anno_size = unit(2, "mm")
-                              
-  )
+                              )
   
   # Create heatmap ---------------------------------------------------------------
-  ht_plot <- Heatmap(matrix = vsd_sub %>% as.matrix(),
-                     name = "log(BCC+1)",
+  ht_plot <- Heatmap(matrix = dispersion_df %>% as.matrix() %>% log1p(),
+                     name = "Dispersion",
                      col = colorpanel(n = 500,
                                       low = "#440154FF",
                                       mid = "#21908CFF",
                                       high = "#FDE725FF"),
-                     row_split = rep(x = c("ADC", "Immune", "AR reg."), times = c(7, 9, 6)) %>% factor(levels = c("ADC", "Immune", "AR reg.")),
+                     row_split = rep(x = c("ADC", "Immune", "AR reg."), times = heatmap_row_split) %>% factor(levels = c("ADC", "Immune", "AR reg.")),
                      cluster_columns = FALSE,
                      cluster_rows = FALSE,
                      row_gap = unit(x = c(1, 2), units = "mm"),
                      border = TRUE,
                      left_annotation = row_ha,
                      top_annotation = col_ha,
-                     row_labels = c("STEAP1", "STEAP2", "PSCA", "PSMA", "TROP-2", "NECTIN1", "DLL3", "B7-H3", "PD-1", "PD-L2", "PD-L1", "LAG3", "TIGIT", "OX40", "4-1BB", "CTLA4", "AR", "KLK2", "KLK3", "TMPRSS2", "FKBP5", "IGF1R"),
+                     row_labels = gene_names,
                      show_column_names = FALSE,
                      row_title = NULL,
                      row_names_side = "left",
-                     width = (ncol(vsd_sub) * unit(2, "mm")) * 1.2,
-                     height = (nrow(vsd_sub) + 3) * unit(3.5, "mm") * 1.2,
+                     width = (ncol(dispersion_df) * unit(2, "mm")) * 1.2,
+                     height = (nrow(dispersion_df) + 3) * unit(3.5, "mm") * 1.2,
                      row_names_gp = gpar(fontsize = 10)
   )
   
   # Save heatmap into pdf --------------------------------------------------------
-  pdf(file = file.path(project_dir, "figures", 'Fig2b.pdf'), 
-      width = convertUnit(x = (ncol(vsd_sub) * unit(2, "mm")) * 1.7, 
+  pdf(file = file.path(project_dir, "figures", 'FigS8.pdf'), 
+      width = convertUnit(x = (dim(dispersion_df)[2] * unit(2, "mm")) * 1.7, 
                           unitTo = "inches"), 
-      height = convertUnit(x = (nrow(vsd_sub) + 3) * unit(3.5, "mm") * 1.7, 
+      height = convertUnit(x = (dim(dispersion_df)[1] + 3) * unit(3.5, "mm") * 1.7, 
                            unitTo = "inches"))
   ComplexHeatmap::draw(ht_plot)
   dev.off()
+  
+  tiff(file = file.path(project_dir, "figures", 'FigS8.tiff'), 
+      width = convertUnit(x = (dim(dispersion_df)[2] * unit(2, "mm")) * 102, 
+                          unitTo = "inches"), 
+      height = convertUnit(x = (dim(dispersion_df)[2] + 3) * unit(3.5, "mm") * 17, 
+                           unitTo = "inches"))
+  ComplexHeatmap::draw(ht_plot)
   dev.off()
   
 }
-
-
-
-
-library(RColorBrewer)
-
-obj <- readRDS(file = "/media/singhlab/B684-19A61/Single cell datasets/Prostate/integrated_dataset/Integrated_clustered_annotated_data_trim.RData")
-obj_lum <- subset(obj, idents = c("Luminal", "Club", "Hillock", "Neuroendocrine"))
-
-meta_data <- obj_lum@meta.data[, c("Subtype", "nCount_RNA","Patient_ID", "Sample_ID")]
-meta_data <- meta_data[!(meta_data$Patient_ID %in% c("GSE172357_BPH")), ]
-# meta_data$Patient_ID <- NULL
-order <- c(which(meta_data$Subtype %in% c("Healthy")), 
-           which(meta_data$Subtype %in% c("Benign")), 
-           which(meta_data$Subtype %in% c("Adeno")), 
-           which(meta_data$Subtype %in% c("ICC/IDC")), 
-           which(meta_data$Subtype %in% "CRPC"), 
-           which(meta_data$Subtype %in% "NEPC"), 
-           which(meta_data$Subtype %in% "Small Cell")
-           ) %>% rev()
-meta_data <- meta_data[order, ]
-genes <- c("STEAP1", "STEAP2", "PSCA", "FOLH1", "TACSTD2", "PVRL1", "DLL3", "CD276", "CD274", "PDCD1LG2", "PDCD1", "LAG3", "TIGIT", "TNFRSF4", "TNFRSF9", "CTLA4", "AR", "KLK2", "KLK3", "TMPRSS2", "FKBP5", "IGF1R")
-
-sample_ID <- meta_data$Sample_ID %>% unique() %>% as.matrix() %>% as.vector()
-H <- vector(mode = "numeric", length = length(sample_ID))
-names(H) <- sample_ID
-
-df <- data.frame(matrix(nrow = length(genes), ncol = length(sample_ID)), row.names = genes)
-colnames(df) <- sample_ID
-pathology <- meta_data[, c("Sample_ID", "Subtype")] %>% unique() %>% remove_rownames()
-rownames(pathology) <- pathology$Sample_ID
-pathology <- pathology[rownames(pathology) %in% sample_ID, ]
-cell_count <- vector(mode = "integer", length = length(sample_ID))
-names(cell_count) <- sample_ID
-med_reads_per_cell <- vector(mode = "numeric", length = length(sample_ID))
-names(med_reads_per_cell) <- sample_ID
-
-for (sample in sample_ID) {
-  
-  print(sample)
-  
-  obj_lum_sub <- subset(obj_lum, Sample_ID == sample)
-  obj_lum_sub <- NormalizeData(obj_lum_sub, normalization.method = "RC")
-  data <- FetchData(obj_lum_sub, vars = genes, layer = "data", assay = "RNA") %>% as.matrix()
-  # data_mat <- GetAssayData(obj_lum_sub, layer = "counts", assay = "RNA")
-  # lib_size <- colSums(data_mat)
-  # cts <- FetchData(obj_lum_sub, vars = "CD276", layer = "counts") %>% as.matrix() %>% as.vector()
-  # data <- (cts + 1) / lib_size
-  # H_patient <- vector(mode = "numeric", length = 10000)
-  # for (i in c(1:10000)) {
-  #   
-  #   data_mc <- sample(x = data, size = 0.2 * length(data), replace = FALSE)
-  #   H_patient[i] <- ((- log(data_mc)) * data_mc) %>% sum()
-  #   
-  # }
-  # H[patient] <- median(H_patient) / length(data) * 10000
-  
-  for (gene in genes) {
-    
-    
-    df[gene, sample] <- sd(data[, gene] %>% as.vector()) / mean(data[, gene] %>% as.vector()) * 100
-    
-  }
-  
-  data <- GetAssayData(obj_lum_sub, layer = "counts", assay = "RNA")
-  med_reads_per_cell[sample] <- colSums(data) %>% as.matrix() %>% as.vector() %>% median()
-  cell_count[sample] <- dim(obj_lum_sub)[2]
-  
-}
-pathology$Subtype <- factor(pathology$Subtype, levels = c("Healthy", "Benign", "Adeno", "ICC/IDC", "CRPC", "NEPC", "Small Cell"))
-anno_colors_col <- list(Subtype = c("#5E4FA2", "#3288BD", "#ABDDA4", "#E6F598", "#FEE08B", "#F46D43", "#9E0142"),
-                        "Cell counts" = colorRamp2(breaks = seq(min(cell_count), max(cell_count), length.out = 100),
-                                                   hcl_palette = "SunsetDark",
-                                                   transparency = 0,
-                                                   reverse = TRUE),
-                        "Reads per cell" = colorRamp2(breaks = seq(min(med_reads_per_cell), max(med_reads_per_cell), length.out = 100),
-                                                      hcl_palette = "Purples 3",
-                                                      transparency = 0,
-                                                      reverse = TRUE)
-                        )
-names(anno_colors_col$Subtype) <- levels(pathology$Subtype)
-col_ha <- HeatmapAnnotation(Subtype = pathology$Subtype,
-                            "Cell counts" = cell_count %>% as.numeric() %>% unname(),
-                            "Reads per cell" = med_reads_per_cell %>% as.numeric() %>% unname(),
-                            col = anno_colors_col,
-                            annotation_label = c("Subtype", "Cell counts", "Reads per cell"),
-                            annotation_name_side = "right",
-                            border = c(Pathology = FALSE, AR_Score = TRUE, NE_Score = TRUE),
-                            simple_anno_size = unit(5, "mm")
-)
-anno_colors_row <- list(Gene = c("#FF0000", "#49FF00", "#0092FF"))
-names(anno_colors_row$Gene) <- c("ADC", "Immune", "AR reg.")
-# poly_ht <- data.frame(x = c(1, 1, 2, 1, 2, 2),
-#                       y = c(1, 2, 2, 1, 2, 1),
-#                       id = factor(c(1, 1, 1, 2, 2, 2), levels = c(1, 2)),
-#                       value = factor(c(1, 1, 1, 2, 2, 2), levels = c(1, 2)))
-row_ha <- HeatmapAnnotation(Gene = rep(x = c("ADC", "Immune", "AR reg."), times = c(7, 9, 6)) %>%
-                              factor(levels = c("ADC", "Immune", "AR reg.")),
-                            col = anno_colors_row,
-                            which = "row",
-                            show_annotation_name = FALSE,
-                            simple_anno_size = unit(2, "mm")
-)
-ht_plot <- Heatmap(matrix = df %>% as.matrix(),
-                   name = "% CV",
-                   col = colorpanel(n = 500,
-                                    low = "#2A6A99",
-                                    mid = "white",
-                                    high = "#B26E39"),
-                   row_split = rep(x = c("ADC", "Immune", "AR reg."), times = c(7, 9, 6)) %>% factor(levels = c("ADC", "Immune", "AR reg.")),
-                   cluster_columns = FALSE,
-                   cluster_rows = FALSE,
-                   row_gap = unit(x = c(1, 2), units = "mm"),
-                   border = TRUE,
-                   left_annotation = row_ha,
-                   top_annotation = col_ha,
-                   row_labels = c("STEAP1", "STEAP2", "PSCA", "PSMA", "TROP-2", "NECTIN1", "DLL3", "B7-H3", "PD-1", "PD-L2", "PD-L1", "LAG3", "TIGIT", "OX40", "4-1BB", "CTLA4", "AR", "KLK2", "KLK3", "TMPRSS2", "FKBP5", "IGF1R"),
-                   show_column_names = FALSE,
-                   row_title = NULL,
-                   row_names_side = "left",
-                   width = (ncol(df) * unit(2, "mm")) * 1.2,
-                   height = (nrow(df) + 3) * unit(3.5, "mm") * 1.2,
-                   row_names_gp = gpar(fontsize = 10)
-)
-pdf(file = file.path(project_dir, "figures", 'FigS8.pdf'), width = convertUnit(x = (ncol(df) * unit(2, "mm")) * 1.7, unitTo = "inches"), height = convertUnit(x = (nrow(df) + 3) * unit(3.5, "mm") * 1.7, unitTo = "inches"))
-ComplexHeatmap::draw(ht_plot)
-dev.off()
-dev.off()

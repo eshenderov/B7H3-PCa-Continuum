@@ -1,4 +1,4 @@
-figS3 <- function (obj, project_dir) {
+figS7 <- function (obj, project_dir) {
   
   # Subset counts data for epithelial cells minus Basal cells --------------------
   obj_epithelial <- subset(obj, 
@@ -77,6 +77,6 @@ figS3 <- function (obj, project_dir) {
     theme(plot.title = element_text(size = 15, face = "bold", hjust = 0.5))
   p3 <- p1 / p2
   ggsave(filename = "FigS7.pdf", path = file.path(project_dir, "figures"), plot = p3, device = "pdf", width = 350, height = 300, units = "mm", dpi = 600)
-  ggsave(filename = "FigS7.tiff", path = file.path(project_dir, "figures"), plot = p3, device = "tiff", width = 350, height = 300, units = "mm", dpi = 300)
+  ggsave(filename = "FigS7.tiff", path = file.path(project_dir, "figures"), plot = p3, device = "tiff", width = 350, height = 300, units = "mm", dpi = 600)
   
 }
